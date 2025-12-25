@@ -166,8 +166,8 @@ def perform_single_voc_cam_pro(args,img_path, image, image_features, attn_weight
 
     bg_features_temp = bg_text_features.cuda()  # [bg_id_for_each_image[im_idx]].to(device_id)
     fg_features_temp = fg_text_features[label_id_list].cuda()
-    # text_features_temp = torch.cat([fg_features_temp, bg_features_temp], dim=0)
-    # input_tensor = [image_features, text_features_temp.cuda(), h, w]
+    original_text_features_temp = torch.cat([fg_features_temp, bg_features_temp], dim=0)
+    original_input_tensor = [image_features, original_text_features_temp.cuda(), h, w]
 
     # 将背景文本特征转换为设备ID和正确的数据类型
     target_dtype = image_features.dtype
@@ -186,39 +186,51 @@ def perform_single_voc_cam_pro(args,img_path, image, image_features, attn_weight
         keys.append(label_index)
         targets = [ClipOutputTarget(label_list.index(label))]
 
-        current_fg_features = fg_features_temp.clone()  # 克隆原始特征
-        weights = class_specific_weights_best1.get(label, {
-            'clip_fg': 0.5, 'vqa_fg': 0.5,
-            'clip_bg': 0.5, 'vqa_bg': 0.5
-        })
 
-        # 只融合当前类别的特征，其他类别保持原始CLIP特征
-        current_fg_features[idx] = (weights['clip_fg'] * fg_features_temp[idx] +
-                                    weights['vqa_fg'] * all_fg_vqa_feats[idx])
+
+        grayscale_cam_clip, logits_per_image, attn_weight_last = cam(input_tensor=original_input_tensor,
+                                                                     targets=targets,
+                                                                     target_size=None)  # (ori_width, ori_height))
+        grayscale_cam_clip = grayscale_cam_clip[0, :]
+
+        # text_features_temp = torch.cat([current_fg_features, fused_bg_features], dim=0)
+        # text_features_temp = text_features_temp.to(target_dtype)
+        # input_tensor = [image_features, text_features_temp.cuda(), h, w]
+
+        current_fg_features = fg_features_temp.clone()  # 克隆原始特征
+        # weights = class_specific_weights_best1.get(label, {
+        #     'clip_fg': 0.5, 'vqa_fg': 0.5,
+        #     'clip_bg': 0.5, 'vqa_bg': 0.5
+        # })
+        #
+        # # 只融合当前类别的特征，其他类别保持原始CLIP特征
+        # current_fg_features[idx] = (weights['clip_fg'] * fg_features_temp[idx] +
+        #                             weights['vqa_fg'] * all_fg_vqa_feats[idx])
 
         bg_vqa_feat = bg_vqa_tool.feats(label, im)
-        fused_bg_features = bg_features_temp.clone()
-        if bg_vqa_feat is not None:
-            bg_vqa_feat = bg_vqa_feat.cuda().to(target_dtype)
-            # 处理尺寸不匹配的情况
-            if bg_vqa_feat.size(0) != bg_features_temp.size(0):
-                bg_vqa_feat = bg_vqa_feat.repeat(bg_features_temp.size(0) // bg_vqa_feat.size(0), 1)
-                if bg_features_temp.size(0) % bg_vqa_feat.size(0) != 0:
-                    remaining = bg_features_temp.size(0) - bg_vqa_feat.size(0)
-                    bg_vqa_feat = torch.cat([bg_vqa_feat, bg_vqa_feat[:remaining]], dim=0)
-                    # 使用平均的背景VQA特征进行融合
-                    fused_bg_features = (weights['clip_bg'] * bg_features_temp +
-                                         weights['vqa_bg'] * bg_vqa_feat)
+        # fused_bg_features = bg_features_temp.clone()
+        # if bg_vqa_feat is not None:
+        #     bg_vqa_feat = bg_vqa_feat.cuda().to(target_dtype)
+        #     # 处理尺寸不匹配的情况
+        #     if bg_vqa_feat.size(0) != bg_features_temp.size(0):
+        #         bg_vqa_feat = bg_vqa_feat.repeat(bg_features_temp.size(0) // bg_vqa_feat.size(0), 1)
+        #         if bg_features_temp.size(0) % bg_vqa_feat.size(0) != 0:
+        #             remaining = bg_features_temp.size(0) - bg_vqa_feat.size(0)
+        #             bg_vqa_feat = torch.cat([bg_vqa_feat, bg_vqa_feat[:remaining]], dim=0)
+        #             # 使用平均的背景VQA特征进行融合
+        #             fused_bg_features = (weights['clip_bg'] * bg_features_temp +
+        #                                  weights['vqa_bg'] * bg_vqa_feat)
+        vqa_features_temp = torch.cat([all_fg_vqa_feats,bg_vqa_feat],dim=0)
+        vqa_features_temp = vqa_features_temp.to(target_dtype)
+        targets_vqa =[ClipOutputTarget(label_list.index(label))]
+        vqa_input_tensor =[image_features,vqa_features_temp.cuda(),h,w]
+        grayscale_cam_vqa,_,_ =cam(input_tensor =vqa_input_tensor,
+                                   targets=targets_vqa,
+                                   target_size=None)
 
-        text_features_temp = torch.cat([current_fg_features, fused_bg_features], dim=0)
-        text_features_temp = text_features_temp.to(target_dtype)
-        input_tensor = [image_features, text_features_temp.cuda(), h, w]
+        grayscale_cam_vqa = grayscale_cam_vqa[0, :]
 
-        grayscale_cam, logits_per_image, attn_weight_last = cam(input_tensor=input_tensor,
-                                                                targets=targets,
-                                                                target_size=None)  # (ori_width, ori_height))
-
-        grayscale_cam = grayscale_cam[0, :]
+        grayscale_cam = np.maximum(grayscale_cam_clip, grayscale_cam_vqa * 0.5)
 
         grayscale_cam_highres = cv2.resize(grayscale_cam, (w, h))
         highres_cam_to_save.append(torch.tensor(grayscale_cam_highres))
