@@ -107,6 +107,42 @@ def generate_trans_mat_seg(aff_mask, attn_weight, grayscale_cam):
 
 def perform_single_voc_cam_pro(args,img_path, image, image_features, attn_weight_list, seg_attn, bg_text_features,
                            fg_text_features, cam, bg_vqa_tool=None, fg_vqa_module=None, clip_model=None,mode='train', require_seg_trans=False):
+    # --- 1. 定义类别自适应权重 (基于你的实验结果) ---
+    # 逻辑：提升的类保持 0.5 或更高，下降的类降至 0.1-0.2
+    # 默认权重 0.2 (保守策略)
+    # 键名需要与 new_class_names1 保持一致 (通常是 PASCAL VOC 标准名)
+    VQA_CONFIDENCE_DICT = {
+        # === 提升的类别 (High VQA Confidence) ===
+        'bird': 0.6,  # 0.855 -> 0.865 (↑)
+        'boat': 0.6,  # 0.716 -> 0.743 (↑↑)
+        'bus': 0.5,  # 0.825 -> 0.827 (↑)
+        'car': 0.5,  # 0.786 -> 0.791 (↑)
+        'cat': 0.5,  # 0.899 -> 0.902 (↑)
+        'chair': 0.6,  # 0.435 -> 0.468 (↑↑) 椅子很难，VQA 很有用
+        'potted plant': 0.6,  # 0.627 -> 0.638 (↑)
+        'sheep': 0.5,  # 0.875 -> 0.878 (↑)
+        'sofa': 0.6,  # 0.591 -> 0.608 (↑)
+        'tv monitor': 0.6,  # 0.555 -> 0.579 (↑↑)
+
+        # === 下降的类别 (Low VQA Confidence - Revert to CLIP) ===
+        'aeroplane': 0.1,  # 0.792 -> 0.789 (↓)
+        'bicycle': 0.1,  # 0.441 -> 0.436 (↓)
+        'bottle': 0.1,  # 0.670 -> 0.650 (↓)
+        'cow': 0.1,  # 0.791 -> 0.787 (↓)
+        'dining table': 0.1,  # 0.663 -> 0.631 (↓) 餐桌容易和物体混淆
+        'dog': 0.2,  # 0.867 -> 0.866 (-) 几乎没变，保留一点辅助
+        'horse': 0.1,  # 0.801 -> 0.797 (↓)
+        'motorbike': 0.1,  # 0.777 -> 0.768 (↓)
+        'person': 0.1,  # 0.740 -> 0.719 (↓↓) 人类下降明显，VQA可能太稀疏了
+        'train': 0.1,  # 0.801 -> 0.798 (↓)
+    }
+
+    VQA_CONFIDENCE_DICT.update({
+        'pottedplant': 0.6,
+        'tvmonitor': 0.6,
+        'diningtable': 0.1
+    })
+
     bg_text_features = bg_text_features.cuda()
     fg_text_features = fg_text_features.cuda()
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -230,7 +266,8 @@ def perform_single_voc_cam_pro(args,img_path, image, image_features, attn_weight
 
         grayscale_cam_vqa = grayscale_cam_vqa[0, :]
 
-        grayscale_cam = np.maximum(grayscale_cam_clip, grayscale_cam_vqa * 0.5)
+        vqa_weight = VQA_CONFIDENCE_DICT.get(label.lower(), 0.3)
+        grayscale_cam = np.maximum(grayscale_cam_clip, grayscale_cam_vqa * vqa_weight)
 
         grayscale_cam_highres = cv2.resize(grayscale_cam, (w, h))
         highres_cam_to_save.append(torch.tensor(grayscale_cam_highres))
